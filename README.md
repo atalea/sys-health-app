@@ -2,8 +2,25 @@
 
 A cross-platform desktop application for monitoring your system's health and running automated cleanup tasks. Built with Python and Tkinter — no browser, no Electron, no internet connection required.
 
-![Dashboard Screenshot](docs/screenshot_dashboard.png)
-> *Screenshot placeholder — replace with your own after first run.*
+![Dashboard](docs/dashboard.png)
+
+> _Live CPU, memory, disk, swap, and network gauges._
+
+![Scheduler](docs/scheduler.png)
+
+> _Configure daily, weekly, and monthly automated cleanup._
+
+![Cleanup Log](docs/cleanup_log.png)
+
+> _Real-time scrolling output of every cleanup operation._
+
+![History](docs/history.png)
+
+> _Full record of past cleanup runs with space freed and file counts._
+
+![Settings](docs/settings.png)
+
+> _Control cleanup targets, age thresholds, and data folder._
 
 ---
 
@@ -12,6 +29,7 @@ A cross-platform desktop application for monitoring your system's health and run
 System Health Monitor is a lightweight desktop utility that gives you a live view of your machine's key metrics and lets you schedule or manually trigger cleanup tasks to free up disk space.
 
 **Five pages:**
+
 - **Dashboard** — live CPU, memory, disk, swap, and network gauges, auto-refreshing every 10 seconds
 - **Scheduler** — configure daily, weekly, or monthly automated cleanup runs
 - **Cleanup Log** — real-time scrolling output of every cleanup operation
@@ -36,11 +54,11 @@ System Health Monitor is a lightweight desktop utility that gives you a live vie
 - **Tkinter** — included with most Python distributions (see OS notes below)
 - **psutil** — the only third-party dependency (`pip install psutil`)
 
-| OS | Minimum version | Notes |
-|---|---|---|
-| macOS | 10.15 Catalina | Tkinter included with Python from python.org |
-| Linux | Any modern distro | May need `python3-tk` package (see below) |
-| Windows | Windows 10 | Tkinter included with Python from python.org |
+| OS      | Minimum version   | Notes                                        |
+| ------- | ----------------- | -------------------------------------------- |
+| macOS   | 10.15 Catalina    | Tkinter included with Python from python.org |
+| Linux   | Any modern distro | May need `python3-tk` package (see below)    |
+| Windows | Windows 10        | Tkinter included with Python from python.org |
 
 ---
 
@@ -162,6 +180,7 @@ system-health-monitor/
 ```
 
 **Data files** (created automatically on first run, not committed to git):
+
 ```
 settings.json        # User preferences
 history.txt          # Cleanup run history
@@ -173,12 +192,12 @@ logs/                # Exported log files
 
 ## Known limitations
 
-| Limitation | Details |
-|---|---|
-| **Open at Login** | The "Open at Login" toggle in Settings is not yet implemented on any platform. It shows in the UI but has no effect. |
+| Limitation                   | Details                                                                                                                                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Open at Login**            | The "Open at Login" toggle in Settings is not yet implemented on any platform. It shows in the UI but has no effect.                                                                                                           |
 | **Windows Recycle Bin size** | The Recycle Bin size measurement uses PowerShell's COM interface. On some corporate Windows machines with restricted PowerShell execution policies, this may return 0. The empty operation still works via `Clear-RecycleBin`. |
-| **Linux cache targets** | Cache cleanup on Linux targets only a fixed list of known app directories (Chrome, Chromium, Firefox, Spotify). Apps not on this list are not touched. |
-| **Network gauge** | The network gauge shows percentage of the session peak speed, not a fixed maximum. On first launch the gauge will always read 100% until a higher speed is recorded. |
+| **Linux cache targets**      | Cache cleanup on Linux targets only a fixed list of known app directories (Chrome, Chromium, Firefox, Spotify). Apps not on this list are not touched.                                                                         |
+| **Network gauge**            | The network gauge shows percentage of the session peak speed, not a fixed maximum. On first launch the gauge will always read 100% until a higher speed is recorded.                                                           |
 
 ---
 

@@ -47,6 +47,7 @@ desktop.ini
 
 # ── Pointer file (stores user's chosen data dir) ──
 .system_health_monitor_dir
+my_folder/
 settings.json
 history.txt
 schedule_config.json
