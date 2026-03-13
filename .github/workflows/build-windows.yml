@@ -4,7 +4,10 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:  # allows you to trigger it manually from GitHub
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-windows:
