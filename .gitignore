@@ -1,0 +1,53 @@
+# ── Python ────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ───────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── App data (user-specific, not for version control) ──
+settings.json
+history.txt
+schedule_config.json
+logs/
+
+# ── PyInstaller output ─────────────────────────
+*.spec
+dist/
+build/
+
+# ── macOS ──────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+*.app
+
+# ── Windows ────────────────────────────────────
+Thumbs.db
+desktop.ini
+*.exe
+
+# ── Linux ──────────────────────────────────────
+*~
+
+# ── IDE / editor ──────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Pointer file (stores user's chosen data dir) ──
+.system_health_monitor_dir
+For me files and guides/
+settings.json
+history.txt
+schedule_config.json

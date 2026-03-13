@@ -1,0 +1,5 @@
+# System Health Monitor — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# System metrics (CPU, memory, disk, network, swap)
+psutil>=5.9.0
