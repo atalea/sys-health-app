@@ -18,25 +18,24 @@ from tkinter import ttk
 import json
 import os
 import sys
+import threading
 import datetime
+from pathlib import Path
 
 # ─────────────────────────────────────────────
 # THEME
 # ─────────────────────────────────────────────
-from app_config import THEME, PATHS, CONSTANTS, bind_scroll, _pick_font
+from app_config import THEME, PATHS, CONSTANTS, bind_scroll
 from utils import ToggleSwitch
 
-FONT_SECTION    = THEME.FONT_SECTION
-FONT_CARD_TITLE = THEME.FONT_TITLE
-FONT_BODY       = THEME.FONT_BODY
-FONT_DETAIL     = THEME.FONT_DETAIL
-FONT_SMALL      = THEME.FONT_SMALL
-FONT_BTN        = THEME.FONT_BTN
+# Late imports moved to top level — avoids hidden dependency graph and
+# makes import errors surface immediately on startup rather than at
+# first "Run Now" click.
+from notifier import CleanupNotifier, CleanupInfo
+from cleanup import CleanupEngine
 
-# ─────────────────────────────────────────────
-# CONFIG FILE path
-# ─────────────────────────────────────────────
-CONFIG_PATH = str(PATHS.SCHEDULE_FILE)
+# NOTE: schedule config path is read from PATHS.SCHEDULE_FILE at call time
+# (not captured here) so it stays correct after Settings > Change Folder.
 
 # Default config - used on first launch or if file is missing
 DEFAULT_CONFIG = {
@@ -74,12 +73,15 @@ def load_config() -> dict:
     Load schedule config from JSON.
     Falls back to DEFAULT_CONFIG if the file doesn't exist or is corrupt.
     We deep-merge so any new keys added to DEFAULT_CONFIG are always present.
+    Reads PATHS.SCHEDULE_FILE at call time so it reflects any folder change
+    made via Settings > Change Folder.
     """
-    if not os.path.exists(CONFIG_PATH):
+    config_path = str(PATHS.SCHEDULE_FILE)
+    if not os.path.exists(config_path):
         return json.loads(json.dumps(DEFAULT_CONFIG))   # deep copy
 
     try:
-        with open(CONFIG_PATH, "r") as f:
+        with open(config_path, "r") as f:
             saved = json.load(f)
         # Merge: start from defaults, overlay saved values
         config = json.loads(json.dumps(DEFAULT_CONFIG))
@@ -93,15 +95,22 @@ def load_config() -> dict:
 
 def save_config(config: dict) -> bool:
     """
-    Write config dict to JSON. Returns True on success.
-    Creates the directory if it doesn't exist.
+    Write config dict to JSON atomically. Returns True on success.
+    Uses a .tmp file + os.replace so a crash mid-write never corrupts
+    the config. Reads PATHS.SCHEDULE_FILE at call time.
     """
+    p   = Path(str(PATHS.SCHEDULE_FILE))
+    tmp = p.with_suffix(".tmp")
     try:
-        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(config, f, indent=2)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        os.replace(tmp, p)
         return True
     except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
         return False
 
 
@@ -124,13 +133,13 @@ class StyledDropdown(tk.Frame):
             bg=THEME.BG_DARK, fg=THEME.TEXT_PRIMARY,
             activebackground=THEME.ACCENT_DIM, activeforeground=THEME.TEXT_PRIMARY,
             highlightthickness=0, relief="flat",
-            font=FONT_DETAIL, width=width, anchor="w",
+            font=THEME.FONT_DETAIL, width=width, anchor="w",
             indicatoron=True
         )
         menu["menu"].config(
             bg=THEME.BG_DARK, fg=THEME.TEXT_PRIMARY,
             activebackground=THEME.ACCENT_DIM, activeforeground=THEME.TEXT_PRIMARY,
-            font=FONT_DETAIL
+            font=THEME.FONT_DETAIL
         )
         menu.pack()
 
@@ -173,7 +182,7 @@ class ScheduleCard(tk.Frame):
 
         self.schedule_type = schedule_type   # "daily" | "weekly" | "monthly"
         self.on_change     = on_change
-        self.config        = dict(config)    # local copy
+        self._sched_config = dict(config)    # local copy; avoids shadowing tk.Frame.config()
 
         self._build(icon)
         self._load(config)
@@ -197,10 +206,10 @@ class ScheduleCard(tk.Frame):
         header.pack(fill="x")
 
         tk.Label(header, text=icon, bg=THEME.BG_CARD, fg=THEME.ACCENT,
-                 font=_pick_font("SF Pro Text", ("Segoe UI", "Helvetica Neue", "Arial"), 15)).pack(side="left", padx=(0, 8))
+                 font=THEME.FONT_ICON).pack(side="left", padx=(0, 8))
         tk.Label(header, text=title_map[self.schedule_type],
                  bg=THEME.BG_CARD, fg=THEME.TEXT_PRIMARY,
-                 font=FONT_CARD_TITLE).pack(side="left")
+                 font=THEME.FONT_TITLE).pack(side="left")
 
         self.toggle = ToggleSwitch(header, on_change=self._on_toggle, bg=THEME.BG_CARD)
         self.toggle.pack(side="right")
@@ -208,7 +217,7 @@ class ScheduleCard(tk.Frame):
         # ── description ────────────────────────
         tk.Label(self, text=desc_map[self.schedule_type],
                  bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                 font=FONT_SMALL).pack(anchor="w", pady=(4, 0))
+                 font=THEME.FONT_SMALL).pack(anchor="w", pady=(4, 0))
 
         # ── divider ────────────────────────────
         tk.Frame(self, bg=THEME.BORDER, height=1).pack(fill="x", pady=(10, 12))
@@ -223,14 +232,14 @@ class ScheduleCard(tk.Frame):
 
         tk.Label(time_row, text="Run at:",
                  bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                 font=FONT_DETAIL, width=9, anchor="w").pack(side="left")
+                 font=THEME.FONT_DETAIL, width=9, anchor="w").pack(side="left")
 
         self.hour_dd = StyledDropdown(time_row, HOURS, "02", width=4)
         self.hour_dd.pack(side="left")
         self.hour_dd.trace(lambda _: self._on_control_change())
 
         tk.Label(time_row, text=" : ", bg=THEME.BG_CARD,
-                 fg=THEME.TEXT_SECONDARY, font=FONT_BODY).pack(side="left")
+                 fg=THEME.TEXT_SECONDARY, font=THEME.FONT_BODY).pack(side="left")
 
         self.min_dd = StyledDropdown(time_row, MINUTES, "00", width=4)
         self.min_dd.pack(side="left")
@@ -242,7 +251,7 @@ class ScheduleCard(tk.Frame):
             week_row.pack(anchor="w", pady=(0, 8))
             tk.Label(week_row, text="On:",
                      bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                     font=FONT_DETAIL, width=9, anchor="w").pack(side="left")
+                     font=THEME.FONT_DETAIL, width=9, anchor="w").pack(side="left")
             self.weekday_dd = StyledDropdown(
                 week_row, DAYS_OF_WEEK, "Sunday", width=10)
             self.weekday_dd.pack(side="left")
@@ -254,7 +263,7 @@ class ScheduleCard(tk.Frame):
             month_row.pack(anchor="w", pady=(0, 8))
             tk.Label(month_row, text="On day:",
                      bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                     font=FONT_DETAIL, width=9, anchor="w").pack(side="left")
+                     font=THEME.FONT_DETAIL, width=9, anchor="w").pack(side="left")
             self.monthday_dd = StyledDropdown(
                 month_row, DAYS_OF_MONTH, "1", width=4)
             self.monthday_dd.pack(side="left")
@@ -263,7 +272,7 @@ class ScheduleCard(tk.Frame):
         # ── next run label ─────────────────────
         self.next_lbl = tk.Label(
             self, text="", bg=THEME.BG_CARD,
-            fg=THEME.TEXT_SECONDARY, font=FONT_SMALL
+            fg=THEME.TEXT_SECONDARY, font=THEME.FONT_SMALL
         )
         self.next_lbl.pack(anchor="w", pady=(6, 0))
 
@@ -297,31 +306,31 @@ class ScheduleCard(tk.Frame):
 
     # ── callbacks ──────────────────────────────
     def _on_toggle(self, state: bool):
-        self.config["enabled"] = state
+        self._sched_config["enabled"] = state
         self._set_controls_state(state)
         self._update_next_label()
         if self.on_change:
             self.on_change()
 
     def _on_control_change(self):
-        self.config["hour"]   = int(self.hour_dd.get())
-        self.config["minute"] = int(self.min_dd.get())
+        self._sched_config["hour"]   = int(self.hour_dd.get())
+        self._sched_config["minute"] = int(self.min_dd.get())
         if self.schedule_type == "weekly":
-            self.config["day"] = self.weekday_dd.get()
+            self._sched_config["day"] = self.weekday_dd.get()
         if self.schedule_type == "monthly":
-            self.config["day"] = int(self.monthday_dd.get())
+            self._sched_config["day"] = int(self.monthday_dd.get())
         self._update_next_label()
         if self.on_change:
             self.on_change()
 
     # ── next scheduled label ───────────────────
     def _update_next_label(self):
-        if not self.config.get("enabled"):
+        if not self._sched_config.get("enabled"):
             self.next_lbl.config(text="Schedule disabled", fg=THEME.TEXT_SECONDARY)
             return
 
-        h = self.config.get("hour", 0)
-        m = self.config.get("minute", 0)
+        h = self._sched_config.get("hour", 0)
+        m = self._sched_config.get("minute", 0)
         time_str = f"{h:02d}:{m:02d}"
 
         if self.schedule_type == "daily":
@@ -329,12 +338,12 @@ class ScheduleCard(tk.Frame):
                 text=f"[t]  Runs daily at {time_str}", fg=THEME.ACCENT)
 
         elif self.schedule_type == "weekly":
-            day = self.config.get("day", "Sunday")
+            day = self._sched_config.get("day", "Sunday")
             self.next_lbl.config(
                 text=f"[t]  Runs every {day} at {time_str}", fg=THEME.ACCENT)
 
         elif self.schedule_type == "monthly":
-            day = self.config.get("day", 1)
+            day = self._sched_config.get("day", 1)
             suffix = _ordinal(day)
             self.next_lbl.config(
                 text=f"[t]  Runs on the {suffix} of each month at {time_str}",
@@ -343,7 +352,7 @@ class ScheduleCard(tk.Frame):
     # ── public API ─────────────────────────────
     def get_config(self) -> dict:
         """Return the current state as a config dict."""
-        return dict(self.config)
+        return dict(self._sched_config)
 
     def grid(self, **kwargs):
         self._border.grid(**kwargs)
@@ -376,8 +385,9 @@ class SchedulerFrame(tk.Frame):
 
     def __init__(self, parent, app=None, **kwargs):
         super().__init__(parent, bg=THEME.BG_DARK, **kwargs)
-        self.app    = app
-        self.config = load_config()
+        self.app          = app
+        self._running     = False   # double-run guard for Run Now
+        self._sched_config = load_config()
         self._build()
 
     def _build(self):
@@ -387,18 +397,18 @@ class SchedulerFrame(tk.Frame):
 
         tk.Label(header, text="Cleanup Schedules",
                  bg=THEME.BG_DARK, fg=THEME.TEXT_PRIMARY,
-                 font=FONT_SECTION).pack(side="left")
+                 font=THEME.FONT_SECTION).pack(side="left")
 
         # Save indicator (shown briefly after save)
         self.save_lbl = tk.Label(
             header, text="", bg=THEME.BG_DARK,
-            fg=THEME.ACCENT, font=FONT_SMALL
+            fg=THEME.ACCENT, font=THEME.FONT_SMALL
         )
         self.save_lbl.pack(side="right")
 
         tk.Label(self, text="Configure when automatic cleanup runs on your system.",
                  bg=THEME.BG_DARK, fg=THEME.TEXT_SECONDARY,
-                 font=FONT_DETAIL).pack(anchor="w", padx=20, pady=(0, 12))
+                 font=THEME.FONT_DETAIL).pack(anchor="w", padx=20, pady=(0, 12))
 
         # ── scrollable canvas for cards ─────────
         canvas = tk.Canvas(self, bg=THEME.BG_DARK, highlightthickness=0)
@@ -428,7 +438,7 @@ class SchedulerFrame(tk.Frame):
             cards_area,
             schedule_type="daily",
             icon="[D]",
-            config=self.config["daily"],
+            config=self._sched_config["daily"],
             on_change=self._auto_save
         )
         self.daily_card.grid(row=0, column=0, sticky="ew", pady=6)
@@ -437,7 +447,7 @@ class SchedulerFrame(tk.Frame):
             cards_area,
             schedule_type="weekly",
             icon="[W]",
-            config=self.config["weekly"],
+            config=self._sched_config["weekly"],
             on_change=self._auto_save
         )
         self.weekly_card.grid(row=1, column=0, sticky="ew", pady=6)
@@ -446,7 +456,7 @@ class SchedulerFrame(tk.Frame):
             cards_area,
             schedule_type="monthly",
             icon="[M]",
-            config=self.config["monthly"],
+            config=self._sched_config["monthly"],
             on_change=self._auto_save
         )
         self.monthly_card.grid(row=2, column=0, sticky="ew", pady=6)
@@ -463,7 +473,7 @@ class SchedulerFrame(tk.Frame):
         run_btn = tk.Label(
             run_border, text="  >  Run Cleanup Now  ",
             bg=THEME.ACCENT, fg=THEME.BG_DARK,
-            font=FONT_BTN, cursor="hand2"
+            font=THEME.FONT_BTN, cursor="hand2"
         )
         run_btn.pack()
         for w in (run_border, run_btn):
@@ -477,7 +487,7 @@ class SchedulerFrame(tk.Frame):
         self.run_status_lbl = tk.Label(
             action_bar, text="",
             bg=THEME.BG_DARK, fg=THEME.TEXT_SECONDARY,
-            font=FONT_SMALL
+            font=THEME.FONT_SMALL
         )
         self.run_status_lbl.pack(side="left", padx=14)
 
@@ -487,20 +497,28 @@ class SchedulerFrame(tk.Frame):
         if not all(hasattr(self, attr) for attr in
                    ("daily_card", "weekly_card", "monthly_card")):
             return
-        self.config["daily"]   = self.daily_card.get_config()
-        self.config["weekly"]  = self.weekly_card.get_config()
-        self.config["monthly"] = self.monthly_card.get_config()
+        self._sched_config["daily"]   = self.daily_card.get_config()
+        self._sched_config["weekly"]  = self.weekly_card.get_config()
+        self._sched_config["monthly"] = self.monthly_card.get_config()
 
-        ok = save_config(self.config)
+        ok = save_config(self._sched_config)
         msg = "[OK]  Saved" if ok else "[!!]  Save failed"
         self.save_lbl.config(text=msg)
         # Clear the label after 2 seconds
         self.after(2000, lambda: self.save_lbl.config(text=""))
 
-    # ── run now (refactored from nested closures) ──
+    # ── run now ────────────────────────────────
     def _run_now(self):
-        """Trigger an immediate cleanup: scan in background, then show notifier."""
-        import threading
+        """
+        Trigger an immediate cleanup: scan in background, then show notifier.
+        Guard prevents multiple concurrent runs if the button is clicked rapidly.
+        """
+        if self._running:
+            self.run_status_lbl.config(
+                text="[!]  Cleanup already running…", fg=THEME.WARN)
+            return
+        self._running = True
+        self.run_status_lbl.config(text="Scanning…", fg=THEME.TEXT_SECONDARY)
         threading.Thread(target=self._scan_and_show, daemon=True).start()
 
     def _get_log_frame(self):
@@ -511,42 +529,46 @@ class SchedulerFrame(tk.Frame):
 
     def _scan_and_show(self):
         """Background: scan for files, then show the notifier on the main thread."""
-        from notifier import CleanupNotifier, CleanupInfo
-        from cleanup import CleanupEngine
+        try:
+            targets = ["caches", "logs", "downloads"]
+            engine  = CleanupEngine(dry_run=True)
+            scan    = engine.scan(targets)
 
-        targets = ["caches", "logs", "downloads"]
-        engine  = CleanupEngine(dry_run=True)
-        scan    = engine.scan(targets)
-
-        info = CleanupInfo(
-            trigger="manual",
-            targets=["User caches", "Old log files",
-                     f"Downloads (files > {CONSTANTS.DOWNLOADS_AGE_DAYS} days old)"],
-            estimated_mb=scan.total_mb()
-        )
-
-        self.after(0, lambda: self._show_notifier(info, targets))
+            info = CleanupInfo(
+                trigger="manual",
+                targets=["User caches", "Old log files",
+                         f"Downloads (files > {CONSTANTS.DOWNLOADS_AGE_DAYS} days old)"],
+                estimated_mb=scan.total_mb()
+            )
+            self.after(0, lambda: self._show_notifier(info, targets))
+        except Exception as e:
+            self.after(0, lambda: self._on_run_error(str(e)))
 
     def _show_notifier(self, info, targets):
         """Main thread: display the CleanupNotifier dialog."""
-        from notifier import CleanupNotifier
-        import threading
+        def _on_confirm(sel):
+            threading.Thread(
+                target=self._do_cleanup, args=(targets,), daemon=True).start()
+
+        def _on_cancel():
+            self._running = False
+            self.run_status_lbl.config(text="Cancelled", fg=THEME.TEXT_SECONDARY)
+
+        def _on_postpone(label, dt):
+            self._running = False
+            self.run_status_lbl.config(
+                text=f"[t]  Postponed to {dt.strftime('%H:%M')}", fg=THEME.WARN)
 
         CleanupNotifier(
             parent=self.winfo_toplevel(),
             info=info,
-            on_confirm=lambda sel: threading.Thread(
-                target=self._do_cleanup, args=(targets,), daemon=True).start(),
-            on_postpone=lambda l, dt: self.run_status_lbl.config(
-                text=f"[t]  Postponed to {dt.strftime('%H:%M')}", fg=THEME.WARN),
-            on_cancel=lambda: self.run_status_lbl.config(
-                text="Cancelled", fg=THEME.TEXT_SECONDARY),
+            on_confirm=_on_confirm,
+            on_postpone=_on_postpone,
+            on_cancel=_on_cancel,
         ).show()
 
     def _do_cleanup(self, targets):
         """Background: run the real cleanup and notify the log frame."""
-        from cleanup import CleanupEngine
-
         log_frame = self._get_log_frame()
         cb = log_frame.get_log_callback() if log_frame else print
 
@@ -554,12 +576,20 @@ class SchedulerFrame(tk.Frame):
             log_frame.winfo_toplevel().after(0, log_frame.notify_run_started)
 
         def on_done(result):
+            self._running = False   # release guard when cleanup finishes
             if log_frame:
                 log_frame.winfo_toplevel().after(
                     0, lambda: log_frame.notify_run_finished(result))
+            self.after(0, lambda: self.run_status_lbl.config(text=""))
 
         real_engine = CleanupEngine(log_callback=cb, dry_run=False)
         real_engine.run(targets, on_done=on_done)
+
+    def _on_run_error(self, msg: str):
+        """Main thread: surface a scan/cleanup error in the status label."""
+        self._running = False
+        self.run_status_lbl.config(
+            text=f"[!!]  Error: {msg}", fg=THEME.DANGER)
 
 
 # ─────────────────────────────────────────────

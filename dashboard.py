@@ -19,15 +19,10 @@ import time
 import datetime
 import platform
 from pathlib import Path
-from app_config import THEME, CONSTANTS, _pick_font
+from app_config import THEME, CONSTANTS
 from utils import bytes_to_human
 
-FONT_PERCENT = _pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 32, "bold")
-REFRESH_MS   = CONSTANTS.DASHBOARD_REFRESH_MS
-
-# Track previous net counters for per-second rate calculation
-_last_net_bytes = None
-_last_net_time  = None
+REFRESH_MS = CONSTANTS.DASHBOARD_REFRESH_MS
 
 
 # ─────────────────────────────────────────────
@@ -37,23 +32,6 @@ def threshold_color(pct: float) -> str:
     if pct >= 85: return THEME.DANGER
     if pct >= 60: return THEME.WARN
     return THEME.ACCENT
-
-
-def _net_rate() -> tuple[int, int]:
-    """Return (bytes_sent_per_sec, bytes_recv_per_sec) since last call."""
-    global _last_net_bytes, _last_net_time
-    now     = time.monotonic()
-    counters = psutil.net_io_counters()
-    if _last_net_bytes is None:
-        _last_net_bytes = (counters.bytes_sent, counters.bytes_recv)
-        _last_net_time  = now
-        return 0, 0
-    elapsed = max(now - _last_net_time, 0.001)
-    sent  = int((counters.bytes_sent - _last_net_bytes[0]) / elapsed)
-    recv  = int((counters.bytes_recv - _last_net_bytes[1]) / elapsed)
-    _last_net_bytes = (counters.bytes_sent, counters.bytes_recv)
-    _last_net_time  = now
-    return max(sent, 0), max(recv, 0)
 
 
 # ─────────────────────────────────────────────
@@ -109,7 +87,7 @@ class ArcGauge(tk.Canvas):
         # Percentage text centred
         cx, cy = self.size / 2, self.size / 2
         self.create_text(cx, cy, text=f"{pct:.0f}%",
-                         fill=color, font=FONT_PERCENT)
+                         fill=color, font=THEME.FONT_PERCENT)
 
 
 # ─────────────────────────────────────────────
@@ -179,7 +157,7 @@ class MetricCard(tk.Frame):
     def grid(self, **kwargs):
         self._border_frame.grid(**kwargs)
 
-    def update(self, pct: float, details: dict):
+    def set_metrics(self, pct: float, details: dict):
         self.gauge.set_value(pct)
         color = threshold_color(pct)
         for key, value in details.items():
@@ -215,7 +193,7 @@ class StatusBar(tk.Frame):
                                  anchor="e")
         self.time_lbl.pack(side="right")
 
-    def update(self, cpu: float, mem: float, disk: float, swap: float):
+    def set_metrics(self, cpu: float, mem: float, disk: float, swap: float):
         issues = []
         for name, val in [("CPU", cpu), ("Memory", mem),
                           ("Disk", disk), ("Swap", swap)]:
@@ -333,7 +311,7 @@ class NetworkCard(tk.Frame):
     def grid(self, **kwargs):
         self._border_frame.grid(**kwargs)
 
-    def update(self, sent: int, recv: int):
+    def set_metrics(self, sent: int, recv: int):
         # Update rolling peaks
         self._peak_recv = max(self._peak_recv, recv, 1)
         self._peak_sent = max(self._peak_sent, sent, 1)
@@ -381,6 +359,10 @@ class DashboardFrame(tk.Frame):
         super().__init__(parent, bg=THEME.BG_DARK, **kwargs)
         self.app = app
         self._refresh_job = None
+        # Instance-level net-rate state (was module-level globals — unsafe when
+        # multiple DashboardFrame instances exist, e.g. in tests or standalone).
+        self._last_net_bytes = None
+        self._last_net_time  = None
         self._build()
         self._refresh()
 
@@ -497,6 +479,25 @@ class DashboardFrame(tk.Frame):
         self.net_card.grid(row=2, column=0, columnspan=2,
                            padx=6, pady=6, sticky="nsew")
 
+    def _net_rate(self) -> tuple:
+        """
+        Return (bytes_sent_per_sec, bytes_recv_per_sec) since last call.
+        State is stored on the instance so multiple DashboardFrame objects
+        (e.g. in tests or standalone mode) never share or corrupt each other.
+        """
+        now      = time.monotonic()
+        counters = psutil.net_io_counters()
+        if self._last_net_bytes is None:
+            self._last_net_bytes = (counters.bytes_sent, counters.bytes_recv)
+            self._last_net_time  = now
+            return 0, 0
+        elapsed = max(now - self._last_net_time, 0.001)
+        sent = int((counters.bytes_sent - self._last_net_bytes[0]) / elapsed)
+        recv = int((counters.bytes_recv - self._last_net_bytes[1]) / elapsed)
+        self._last_net_bytes = (counters.bytes_sent, counters.bytes_recv)
+        self._last_net_time  = now
+        return max(sent, 0), max(recv, 0)
+
     def _get_metrics(self) -> dict:
         """
         Fetch all system metrics via psutil.
@@ -519,7 +520,7 @@ class DashboardFrame(tk.Frame):
             _disk_path = str(Path("/").anchor)   # "/" on macOS/Linux, "C:\" on Windows
         disk = psutil.disk_usage(_disk_path)
         swap = psutil.swap_memory()
-        net_sent, net_recv = _net_rate()
+        net_sent, net_recv = self._net_rate()
 
         return {
             "cpu_pct":     cpu_pct,
@@ -550,7 +551,7 @@ class DashboardFrame(tk.Frame):
         """Push fresh metrics to all cards, then schedule next refresh."""
         m = self._get_metrics()
 
-        self.cpu_card.update(
+        self.cpu_card.set_metrics(
             pct=m["cpu_pct"],
             details={
                 "Usage": f"{m['cpu_pct']:.1f}%",
@@ -558,23 +559,23 @@ class DashboardFrame(tk.Frame):
                 "Freq":  m["cpu_freq"],
             }
         )
-        self.mem_card.update(
+        self.mem_card.set_metrics(
             pct=m["mem_pct"],
             details={"Used": m["mem_used"], "Free": m["mem_free"],
                      "Total": m["mem_total"]}
         )
-        self.disk_card.update(
+        self.disk_card.set_metrics(
             pct=m["disk_pct"],
             details={"Used": m["disk_used"], "Free": m["disk_free"],
                      "Total": m["disk_total"]}
         )
-        self.swap_card.update(
+        self.swap_card.set_metrics(
             pct=m["swap_pct"],
             details={"Used": m["swap_used"], "Free": m["swap_free"],
                      "Total": m["swap_total"]}
         )
-        self.net_card.update(m["net_sent"], m["net_recv"])
-        self.status_bar.update(
+        self.net_card.set_metrics(m["net_sent"], m["net_recv"])
+        self.status_bar.set_metrics(
             m["cpu_pct"], m["mem_pct"], m["disk_pct"], m["swap_pct"]
         )
 
@@ -657,7 +658,7 @@ def _run_tests():
         check("ArcGauge value stored", g.pct == 55)
 
         c = MetricCard(root, "Test", ("Used", "Free", "Total"))
-        c.update(40, {"Used": "4 GB", "Free": "8 GB", "Total": "16 GB"})
+        c.set_metrics(40, {"Used": "4 GB", "Free": "8 GB", "Total": "16 GB"})
         check("MetricCard Used",  c.detail_labels["Used"].cget("text")  == "4 GB")
         check("MetricCard Total", c.detail_labels["Total"].cget("text") == "16 GB")
 

@@ -32,45 +32,18 @@ from typing import Optional, List
 # ─────────────────────────────────────────────
 # THEME
 # ─────────────────────────────────────────────
-from app_config import THEME, PATHS, CONSTANTS, bind_scroll, _pick_font
-
-BG_DARK        = THEME.BG_DARK
-BG_CARD        = THEME.BG_CARD
-BG_ROW         = THEME.BG_ROW
-BG_ROW_SEL     = THEME.BG_ROW_SEL
-BG_ROW_HOVER   = THEME.BG_ROW_HOVER
-ACCENT         = THEME.ACCENT
-ACCENT_DIM     = THEME.ACCENT_DIM
-WARN           = THEME.WARN
-DANGER         = THEME.DANGER
-BLUE           = THEME.BLUE
-TEXT_PRIMARY   = THEME.TEXT_PRIMARY
-TEXT_SECONDARY = THEME.TEXT_SECONDARY
-BORDER         = THEME.BORDER
-BORDER_CARD    = THEME.BORDER_CARD
-
-FONT_SECTION   = THEME.FONT_SECTION
-FONT_TITLE     = THEME.FONT_TITLE
-FONT_BODY      = THEME.FONT_BODY
-FONT_DETAIL    = THEME.FONT_DETAIL
-FONT_SMALL     = THEME.FONT_SMALL
-FONT_MONO      = THEME.FONT_MONO
-FONT_BTN       = THEME.FONT_BTN
+from app_config import THEME, PATHS, CONSTANTS, bind_scroll
+from utils import bytes_to_human as _bytes_to_human  # canonical single source
 
 MAX_HISTORY_RECORDS = CONSTANTS.MAX_HISTORY_RECORDS
-HISTORY_FILE        = str(PATHS.HISTORY_FILE)
+# NOTE: HISTORY_FILE is intentionally NOT captured at module level.
+# HistoryStore reads PATHS.HISTORY_FILE at call time so it stays correct
+# if the user changes the data folder via Settings > Change Folder.
 
 
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
-def _bytes_to_human(n: int) -> str:
-    if n >= 1024 ** 3: return f"{n/1024**3:.2f} GB"
-    if n >= 1024 ** 2: return f"{n/1024**2:.1f} MB"
-    if n >= 1024:      return f"{n/1024:.0f} KB"
-    return f"{n} B"
-
-
 def _fmt_dt(iso: str) -> str:
     """Format ISO datetime string to human-readable."""
     try:
@@ -134,13 +107,15 @@ class HistoryStore:
 
     BLOCK_SEP = "==="
 
-    def __init__(self, path: str = HISTORY_FILE):
-        self.path = path
+    def __init__(self, path: str = None):
+        # Default reads PATHS.HISTORY_FILE at construction time, not at module
+        # import time, so it stays correct after Settings > Change Folder.
+        self.path = path or str(PATHS.HISTORY_FILE)
         self._cache: list = []   # in-memory fallback if file is deleted
         self._ensure_dir()
 
     def _ensure_dir(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
 
     # ── serialise ──────────────────────────────
     def _record_to_text(self, record: dict) -> str:
@@ -229,31 +204,56 @@ class HistoryStore:
         Add a new run record to the top of the file.
         Accepts a dict (from CleanupResult.to_dict()) or
         a CleanupResult object directly.
+
+        Uses an atomic write (temp file → os.replace) so a crash or
+        concurrent write can never corrupt the history file.
         """
         if hasattr(record, "to_dict"):
             record = record.to_dict()
 
-        # Read existing content
+        # Read existing content (one read)
         try:
-            with open(self.path, "r") as f:
-                existing = f.read()
+            existing = Path(self.path).read_text(encoding="utf-8")
         except FileNotFoundError:
             existing = ""
 
         new_block = self._record_to_text(record)
 
-        # Prepend new block
+        # Build full content in memory — prepend new block
+        combined = new_block + (existing if existing.strip() else "")
+
+        # Prune in memory — parse only if we might be over the limit
+        if combined.count("=== Cleanup Run") > MAX_HISTORY_RECORDS:
+            blocks = re.findall(
+                r"(=== Cleanup Run.*?^===)",
+                combined, re.DOTALL | re.MULTILINE)
+            records = []
+            for b in blocks:
+                r = self._text_to_record(b)
+                if r.get("started_at"):
+                    records.append(r)
+            if len(records) > MAX_HISTORY_RECORDS:
+                records = records[:MAX_HISTORY_RECORDS]
+            combined = "".join(self._record_to_text(r) for r in records)
+            self._cache = list(records)
+
+        # Atomic write — never truncates without a complete replacement
         self._ensure_dir()
-        with open(self.path, "w") as f:
-            f.write(new_block)
-            if existing.strip():
-                f.write(existing)
+        self._atomic_write(combined)
 
-        # Prune if over limit
-        records = self.load()
-        if len(records) > MAX_HISTORY_RECORDS:
-            self._save_all(records[:MAX_HISTORY_RECORDS])
-
+    def _atomic_write(self, content: str):
+        """Write content atomically via a sibling temp file + os.replace."""
+        p   = Path(self.path)
+        tmp = p.with_suffix(".tmp")
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(tmp, p)
+        except Exception:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
 
     def parse_file(self, path: str) -> List[dict]:
         """
@@ -305,14 +305,12 @@ class HistoryStore:
 
     def clear(self):
         self._ensure_dir()
-        with open(self.path, "w") as f:
-            f.write("")
+        self._atomic_write("")
 
     def _save_all(self, records: list):
         self._ensure_dir()
-        with open(self.path, "w") as f:
-            for r in records:
-                f.write(self._record_to_text(r))
+        content = "".join(self._record_to_text(r) for r in records)
+        self._atomic_write(content)
 
     def count(self) -> int:
         return len(self.load())
@@ -329,7 +327,7 @@ class DetailPanel(tk.Frame):
     """
 
     def __init__(self, parent, **kwargs):
-        super().__init__(parent, bg=BG_CARD, **kwargs)
+        super().__init__(parent, bg=THEME.BG_CARD, **kwargs)
         self._build_empty()
 
     def _build_empty(self):
@@ -338,8 +336,8 @@ class DetailPanel(tk.Frame):
             w.destroy()
 
         tk.Label(self, text="Select a run\nto see details",
-                 bg=BG_CARD, fg=BORDER,
-                 font=_pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 13),
+                 bg=THEME.BG_CARD, fg=THEME.BORDER,
+                 font=THEME.FONT_SECTION,
                  justify="center").pack(expand=True)
 
     def show(self, record: dict):
@@ -348,26 +346,26 @@ class DetailPanel(tk.Frame):
             w.destroy()
 
         # ── header ─────────────────────────────
-        header = tk.Frame(self, bg=BG_CARD, padx=20, pady=16)
+        header = tk.Frame(self, bg=THEME.BG_CARD, padx=20, pady=16)
         header.pack(fill="x")
 
         started = record.get("started_at", "")
         tk.Label(header,
                  text=_fmt_dt(started),
-                 bg=BG_CARD, fg=TEXT_PRIMARY,
-                 font=FONT_TITLE).pack(anchor="w")
+                 bg=THEME.BG_CARD, fg=THEME.TEXT_PRIMARY,
+                 font=THEME.FONT_TITLE).pack(anchor="w")
 
         trigger = record.get("targets_run", [])
         trigger_str = ", ".join(trigger) if trigger else "-"
         tk.Label(header,
                  text=f"Targets: {trigger_str}",
-                 bg=BG_CARD, fg=TEXT_SECONDARY,
-                 font=FONT_SMALL).pack(anchor="w", pady=(2, 0))
+                 bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
+                 font=THEME.FONT_SMALL).pack(anchor="w", pady=(2, 0))
 
-        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+        tk.Frame(self, bg=THEME.BORDER, height=1).pack(fill="x")
 
         # ── stat rows ──────────────────────────
-        stats = tk.Frame(self, bg=BG_CARD, padx=20, pady=14)
+        stats = tk.Frame(self, bg=THEME.BG_CARD, padx=20, pady=14)
         stats.pack(fill="x")
 
         freed   = record.get("freed_bytes", 0)
@@ -377,53 +375,53 @@ class DetailPanel(tk.Frame):
         duration = _duration_str(started, finished)
 
         rows = [
-            ("Space Freed",    _bytes_to_human(freed),  ACCENT),
-            ("Files Deleted",  str(deleted),             TEXT_PRIMARY),
+            ("Space Freed",    _bytes_to_human(freed),  THEME.ACCENT),
+            ("Files Deleted",  str(deleted),             THEME.TEXT_PRIMARY),
             ("Errors",         str(errors),
-             DANGER if errors > 0 else TEXT_SECONDARY),
-            ("Duration",       duration,                 TEXT_SECONDARY),
+             THEME.DANGER if errors > 0 else THEME.TEXT_SECONDARY),
+            ("Duration",       duration,                 THEME.TEXT_SECONDARY),
         ]
 
         for label, value, color in rows:
-            row = tk.Frame(stats, bg=BG_CARD)
+            row = tk.Frame(stats, bg=THEME.BG_CARD)
             row.pack(fill="x", pady=4)
             tk.Label(row, text=label,
-                     bg=BG_CARD, fg=TEXT_SECONDARY,
-                     font=FONT_DETAIL, width=14,
+                     bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
+                     font=THEME.FONT_DETAIL, width=14,
                      anchor="w").pack(side="left")
             tk.Label(row, text=value,
-                     bg=BG_CARD, fg=color,
-                     font=FONT_TITLE,
+                     bg=THEME.BG_CARD, fg=color,
+                     font=THEME.FONT_TITLE,
                      anchor="w").pack(side="left")
 
-        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+        tk.Frame(self, bg=THEME.BORDER, height=1).pack(fill="x")
 
         # ── summary text ───────────────────────
         summary = record.get("summary", "")
         if summary:
-            sum_frame = tk.Frame(self, bg=BG_CARD, padx=20, pady=12)
+            sum_frame = tk.Frame(self, bg=THEME.BG_CARD, padx=20, pady=12)
             sum_frame.pack(fill="x")
             tk.Label(sum_frame, text="Summary",
-                     bg=BG_CARD, fg=TEXT_SECONDARY,
-                     font=FONT_SMALL).pack(anchor="w")
+                     bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
+                     font=THEME.FONT_SMALL).pack(anchor="w")
             tk.Label(sum_frame, text=summary,
-                     bg=BG_CARD, fg=TEXT_PRIMARY,
-                     font=FONT_DETAIL,
+                     bg=THEME.BG_CARD, fg=THEME.TEXT_PRIMARY,
+                     font=THEME.FONT_DETAIL,
                      wraplength=220, justify="left",
                      anchor="w").pack(anchor="w", pady=(4, 0))
 
         # ── status badge ───────────────────────
-        badge_frame = tk.Frame(self, bg=BG_CARD, padx=20, pady=8)
+        badge_frame = tk.Frame(self, bg=THEME.BG_CARD, padx=20, pady=8)
         badge_frame.pack(fill="x")
         if errors > 0:
             badge_text  = f"[!]  Completed with {errors} error(s)"
-            badge_color = WARN
+            badge_color = THEME.WARN
         else:
             badge_text  = "[OK]  Completed successfully"
-            badge_color = ACCENT
+            badge_color = THEME.ACCENT
         tk.Label(badge_frame, text=badge_text,
-                 bg=BG_CARD, fg=badge_color,
-                 font=FONT_DETAIL).pack(anchor="w")
+                 bg=THEME.BG_CARD, fg=badge_color,
+                 font=THEME.FONT_DETAIL).pack(anchor="w")
 
 
 # ─────────────────────────────────────────────
@@ -434,7 +432,7 @@ class HistoryRow(tk.Frame):
 
     def __init__(self, parent, record: dict,
                  on_select=None, selected=False, **kwargs):
-        super().__init__(parent, bg=BG_ROW_SEL if selected else BG_ROW,
+        super().__init__(parent, bg=THEME.BG_ROW_SEL if selected else THEME.BG_ROW,
                          **kwargs)
         self.record    = record
         self.on_select = on_select
@@ -444,15 +442,15 @@ class HistoryRow(tk.Frame):
 
     def _build(self):
         content = tk.Frame(self,
-                           bg=BG_ROW_SEL if self._selected else BG_ROW)
+                           bg=THEME.BG_ROW_SEL if self._selected else THEME.BG_ROW)
         content.pack(fill="x", padx=12, pady=8)
 
         # Date + time
         started  = record = self.record.get("started_at", "")
         date_str = _fmt_dt(started)
         tk.Label(content, text=date_str,
-                 bg=content["bg"], fg=TEXT_PRIMARY,
-                 font=FONT_DETAIL, anchor="w").pack(anchor="w")
+                 bg=content["bg"], fg=THEME.TEXT_PRIMARY,
+                 font=THEME.FONT_DETAIL, anchor="w").pack(anchor="w")
 
         # Stats row
         freed   = self.record.get("freed_bytes", 0)
@@ -466,32 +464,32 @@ class HistoryRow(tk.Frame):
         freed_lbl = tk.Label(
             stats_row,
             text=f"  {_bytes_to_human(freed)}  ",
-            bg=ACCENT_DIM, fg=ACCENT,
-            font=FONT_SMALL)
+            bg=THEME.ACCENT_DIM, fg=THEME.ACCENT,
+            font=THEME.FONT_SMALL)
         freed_lbl.pack(side="left", padx=(0, 6))
 
         tk.Label(stats_row,
                  text=f"{deleted} files",
-                 bg=content["bg"], fg=TEXT_SECONDARY,
-                 font=FONT_SMALL).pack(side="left", padx=(0, 6))
+                 bg=content["bg"], fg=THEME.TEXT_SECONDARY,
+                 font=THEME.FONT_SMALL).pack(side="left", padx=(0, 6))
 
         if errors > 0:
             tk.Label(stats_row,
                      text=f"{errors} errors",
-                     bg=content["bg"], fg=WARN,
-                     font=FONT_SMALL).pack(side="left")
+                     bg=content["bg"], fg=THEME.WARN,
+                     font=THEME.FONT_SMALL).pack(side="left")
 
         # Divider
-        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+        tk.Frame(self, bg=THEME.BORDER, height=1).pack(fill="x")
 
     def _bind_hover(self):
         def enter(_):
             if not self._selected:
-                self._set_bg(BG_ROW_HOVER)
+                self._set_bg(THEME.BG_ROW_HOVER)
 
         def leave(_):
             if not self._selected:
-                self._set_bg(BG_ROW)
+                self._set_bg(THEME.BG_ROW)
 
         def click(_):
             if self.on_select:
@@ -520,7 +518,7 @@ class HistoryRow(tk.Frame):
 
     def set_selected(self, val: bool):
         self._selected = val
-        self._set_bg(BG_ROW_SEL if val else BG_ROW)
+        self._set_bg(THEME.BG_ROW_SEL if val else THEME.BG_ROW)
 
 
 # ─────────────────────────────────────────────
@@ -542,7 +540,7 @@ class HistoryFrame(tk.Frame):
     """
 
     def __init__(self, parent, app=None, **kwargs):
-        super().__init__(parent, bg=BG_DARK, **kwargs)
+        super().__init__(parent, bg=THEME.BG_DARK, **kwargs)
         self.app          = app
         self._store       = HistoryStore()
         self._rows: List[HistoryRow] = []
@@ -552,15 +550,15 @@ class HistoryFrame(tk.Frame):
 
     def _build(self):
         # ── page header ────────────────────────
-        header = tk.Frame(self, bg=BG_DARK)
+        header = tk.Frame(self, bg=THEME.BG_DARK)
         header.pack(fill="x", padx=20, pady=(16, 10))
 
         tk.Label(header, text="Cleanup History",
-                 bg=BG_DARK, fg=TEXT_PRIMARY,
-                 font=FONT_SECTION).pack(side="left")
+                 bg=THEME.BG_DARK, fg=THEME.TEXT_PRIMARY,
+                 font=THEME.FONT_SECTION).pack(side="left")
 
         # Action buttons
-        btn_frame = tk.Frame(header, bg=BG_DARK)
+        btn_frame = tk.Frame(header, bg=THEME.BG_DARK)
         btn_frame.pack(side="right")
 
         self._import_btn = self._make_btn(
@@ -579,31 +577,31 @@ class HistoryFrame(tk.Frame):
         self._clear_btn.pack(side="left")
 
         # ── main content: list | detail ─────────
-        self._content_frame = tk.Frame(self, bg=BG_DARK)
+        self._content_frame = tk.Frame(self, bg=THEME.BG_DARK)
         content = self._content_frame
         content.pack(fill="both", expand=True, padx=20, pady=(0, 12))
 
         # Left: run list
-        list_container = tk.Frame(content, bg=BG_DARK)
+        list_container = tk.Frame(content, bg=THEME.BG_DARK)
         list_container.pack(side="left", fill="both",
                             expand=True, padx=(0, 10))
 
         # Stats bar above list
         self._stats_bar = tk.Label(
             list_container, text="",
-            bg=BG_DARK, fg=TEXT_SECONDARY,
-            font=FONT_SMALL, anchor="w")
+            bg=THEME.BG_DARK, fg=THEME.TEXT_SECONDARY,
+            font=THEME.FONT_SMALL, anchor="w")
         self._stats_bar.pack(fill="x", pady=(0, 6))
 
         # Scrollable list
-        list_border = tk.Frame(list_container, bg=BORDER_CARD,
+        list_border = tk.Frame(list_container, bg=THEME.BORDER_CARD,
                                padx=1, pady=1)
         list_border.pack(fill="both", expand=True)
 
-        list_inner = tk.Frame(list_border, bg=BG_DARK)
+        list_inner = tk.Frame(list_border, bg=THEME.BG_DARK)
         list_inner.pack(fill="both", expand=True, padx=1, pady=1)
 
-        self._canvas = tk.Canvas(list_inner, bg=BG_ROW,
+        self._canvas = tk.Canvas(list_inner, bg=THEME.BG_ROW,
                                  highlightthickness=0)
         scrollbar = tk.Scrollbar(list_inner, orient="vertical",
                                  command=self._canvas.yview)
@@ -611,7 +609,7 @@ class HistoryFrame(tk.Frame):
         scrollbar.pack(side="right", fill="y")
         self._canvas.pack(side="left", fill="both", expand=True)
 
-        self._list_frame = tk.Frame(self._canvas, bg=BG_ROW)
+        self._list_frame = tk.Frame(self._canvas, bg=THEME.BG_ROW)
         self._canvas_win = self._canvas.create_window(
             (0, 0), window=self._list_frame, anchor="nw")
 
@@ -628,7 +626,7 @@ class HistoryFrame(tk.Frame):
                     lambda d: self._canvas.yview_scroll(d, "units"))
 
         # Right: detail panel
-        detail_border = tk.Frame(content, bg=BORDER_CARD,
+        detail_border = tk.Frame(content, bg=THEME.BORDER_CARD,
                                  padx=1, pady=1,
                                  width=260)
         detail_border.pack(side="right", fill="y")
@@ -644,22 +642,22 @@ class HistoryFrame(tk.Frame):
             text="No cleanup runs yet.\n\n"
                  "Go to Scheduler and run a cleanup\n"
                  "to see your history here.",
-            bg=BG_ROW, fg=BORDER,
-            font=_pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 12),
+            bg=THEME.BG_ROW, fg=THEME.BORDER,
+            font=THEME.FONT_LABEL,
             justify="center")
 
     def _make_btn(self, parent, text, command):
-        border = tk.Frame(parent, bg=BORDER_CARD, padx=1, pady=1)
+        border = tk.Frame(parent, bg=THEME.BORDER_CARD, padx=1, pady=1)
         btn = tk.Label(border, text=f"  {text}  ",
-                       bg=BG_CARD, fg=TEXT_SECONDARY,
-                       font=FONT_BTN, cursor="hand2")
+                       bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
+                       font=THEME.FONT_BTN, cursor="hand2")
         btn.pack()
         for w in (border, btn):
             w.bind("<Button-1>", lambda _: command())
             w.bind("<Enter>",
-                   lambda _, b=btn: b.config(fg=TEXT_PRIMARY))
+                   lambda _, b=btn: b.config(fg=THEME.TEXT_PRIMARY))
             w.bind("<Leave>",
-                   lambda _, b=btn: b.config(fg=TEXT_SECONDARY))
+                   lambda _, b=btn: b.config(fg=THEME.TEXT_SECONDARY))
         return border
 
     # ── data loading ───────────────────────────
@@ -681,17 +679,17 @@ class HistoryFrame(tk.Frame):
     def _show_file_deleted_banner(self):
         if hasattr(self, "_deleted_banner") and self._deleted_banner.winfo_exists():
             return
-        self._deleted_banner = tk.Frame(self, bg=WARN)
+        self._deleted_banner = tk.Frame(self, bg=THEME.WARN)
         self._deleted_banner.pack(fill="x", before=self._content_frame)
-        msg = tk.Frame(self._deleted_banner, bg=WARN, padx=20, pady=8)
+        msg = tk.Frame(self._deleted_banner, bg=THEME.WARN, padx=20, pady=8)
         msg.pack(fill="x")
         tk.Label(msg,
                  text="[!]  history.txt was deleted - showing last known history from memory.",
-                 bg=WARN, fg=BG_DARK,
-                 font=_pick_font("SF Pro Text", ("Segoe UI", "Helvetica Neue", "Arial"), 10, "bold")).pack(side="left")
+                 bg=THEME.WARN, fg=THEME.BG_DARK,
+                 font=THEME.FONT_DETAIL_BOLD).pack(side="left")
         restore_lbl = tk.Label(msg, text="  Restore File  ",
-                               bg=BG_DARK, fg=WARN,
-                               font=_pick_font("SF Pro Text", ("Segoe UI", "Helvetica Neue", "Arial"), 10, "bold"),
+                               bg=THEME.BG_DARK, fg=THEME.WARN,
+                               font=THEME.FONT_DETAIL_BOLD,
                                cursor="hand2")
         restore_lbl.pack(side="right")
         restore_lbl.bind("<Button-1>", lambda _: self._restore_history_file())
@@ -720,8 +718,8 @@ class HistoryFrame(tk.Frame):
                 text="No cleanup runs yet.\n\n"
                      "Go to Scheduler and run a cleanup\n"
                      "to see your history here.",
-                bg=BG_ROW, fg=BORDER,
-                font=_pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 12),
+                bg=THEME.BG_ROW, fg=THEME.BORDER,
+                font=THEME.FONT_LABEL,
                 justify="center")
             self._empty_lbl.pack(expand=True, pady=40)
             self._detail._build_empty()
@@ -780,7 +778,7 @@ class HistoryFrame(tk.Frame):
         """Export full history to a timestamped .txt in the logs folder."""
         records = self._store.load()
         if not records:
-            self._show_status("Nothing to export - no history yet.", WARN)
+            self._show_status("Nothing to export - no history yet.", THEME.WARN)
             return
         log_dir = str(PATHS.LOGS_DIR)
         os.makedirs(log_dir, exist_ok=True)
@@ -795,9 +793,9 @@ class HistoryFrame(tk.Frame):
                 f.write("=" * 48 + "\n\n")
                 for r in records:
                     f.write(self._store._record_to_text(r))
-            self._show_status(f"[OK]  Exported to logs/history_export_{ts}.txt", ACCENT)
+            self._show_status(f"[OK]  Exported to logs/history_export_{ts}.txt", THEME.ACCENT)
         except OSError as e:
-            self._show_status(f"[!!]  Export failed: {e}", DANGER)
+            self._show_status(f"[!!]  Export failed: {e}", THEME.DANGER)
 
     def _import_history(self):
         """Open a file picker to import a history .txt file."""
@@ -817,14 +815,14 @@ class HistoryFrame(tk.Frame):
 
         imported = self._store.parse_file(path)
         if not imported:
-            self._show_status("[!!]  No valid records found in that file.", DANGER)
+            self._show_status("[!!]  No valid records found in that file.", THEME.DANGER)
             return
 
         added = self._store.merge_import(imported)
         if added == 0:
-            self._show_status("ℹ️  All records already exist - nothing new imported.", TEXT_SECONDARY)
+            self._show_status("ℹ️  All records already exist - nothing new imported.", THEME.TEXT_SECONDARY)
         else:
-            self._show_status(f"[OK]  Imported {added} new run(s) from file.", ACCENT)
+            self._show_status(f"[OK]  Imported {added} new run(s) from file.", THEME.ACCENT)
 
         self._selected_record = None
         self._load_records()
@@ -839,29 +837,29 @@ class HistoryFrame(tk.Frame):
         confirm = tk.Toplevel(self)
         confirm.title("Clear History")
         confirm.resizable(False, False)
-        confirm.configure(bg=BG_DARK)
+        confirm.configure(bg=THEME.BG_DARK)
         confirm.transient(self)
         confirm.grab_set()
 
         tk.Label(confirm,
                  text="Clear all cleanup history?",
-                 bg=BG_DARK, fg=TEXT_PRIMARY,
-                 font=FONT_TITLE,
+                 bg=THEME.BG_DARK, fg=THEME.TEXT_PRIMARY,
+                 font=THEME.FONT_TITLE,
                  padx=24, pady=20).pack()
         tk.Label(confirm,
                  text="This cannot be undone.",
-                 bg=BG_DARK, fg=TEXT_SECONDARY,
-                 font=FONT_DETAIL).pack(pady=(0, 16))
+                 bg=THEME.BG_DARK, fg=THEME.TEXT_SECONDARY,
+                 font=THEME.FONT_DETAIL).pack(pady=(0, 16))
 
-        btn_row = tk.Frame(confirm, bg=BG_DARK, padx=20, pady=12)
+        btn_row = tk.Frame(confirm, bg=THEME.BG_DARK, padx=20, pady=12)
         btn_row.pack()
 
         # Cancel
-        cancel_b = tk.Frame(btn_row, bg=BORDER_CARD, padx=1, pady=1)
+        cancel_b = tk.Frame(btn_row, bg=THEME.BORDER_CARD, padx=1, pady=1)
         cancel_b.pack(side="left", padx=(0, 10))
         cancel_l = tk.Label(cancel_b, text="  Cancel  ",
-                            bg=BG_CARD, fg=TEXT_SECONDARY,
-                            font=FONT_BTN, cursor="hand2")
+                            bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
+                            font=THEME.FONT_BTN, cursor="hand2")
         cancel_l.pack()
         for w in (cancel_b, cancel_l):
             w.bind("<Button-1>",
@@ -869,11 +867,11 @@ class HistoryFrame(tk.Frame):
                                confirm.destroy()))
 
         # Clear
-        clear_b = tk.Frame(btn_row, bg=DANGER, padx=1, pady=1)
+        clear_b = tk.Frame(btn_row, bg=THEME.DANGER, padx=1, pady=1)
         clear_b.pack(side="left")
         clear_l = tk.Label(clear_b, text="  Clear All  ",
-                           bg=DANGER, fg=BG_DARK,
-                           font=FONT_BTN, cursor="hand2")
+                           bg=THEME.DANGER, fg=THEME.BG_DARK,
+                           font=THEME.FONT_BTN, cursor="hand2")
         clear_l.pack()
         for w in (clear_b, clear_l):
             w.bind("<Button-1>", lambda _: self._do_clear(confirm))
@@ -906,7 +904,7 @@ def _run_standalone():
     root.title("History - Module 7 Test")
     root.geometry("900x600")
     root.minsize(700, 500)
-    root.configure(bg=BG_DARK)
+    root.configure(bg=THEME.BG_DARK)
 
     frame = HistoryFrame(root)
     frame.pack(fill="both", expand=True)
@@ -1069,7 +1067,7 @@ def _run_tests():
 
         frame = HistoryFrame.__new__(HistoryFrame)
         frame._store = HistoryStore(path=tmp_file2)
-        tk.Frame.__init__(frame, root, bg=BG_DARK)
+        tk.Frame.__init__(frame, root, bg=THEME.BG_DARK)
         frame.app = None
         frame._rows = []
         frame._selected_record = None

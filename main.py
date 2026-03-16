@@ -30,7 +30,7 @@ BORDER         = THEME.BORDER
 # THEME.FONT_TITLE already has the correct cross-platform font stack.
 FONT_TITLE   = THEME.FONT_TITLE         # was: ("SF Pro Display", 18, "bold")
 FONT_NAV     = THEME.FONT_SMALL
-FONT_NAV_SEL = THEME.FONT_BODY + ("bold",) if len(THEME.FONT_BODY) == 2 else THEME.FONT_BODY
+FONT_NAV_SEL = THEME.FONT_BODY_BOLD   # use dedicated bold variant from _Theme
 FONT_SMALL   = THEME.FONT_SMALL
 
 SIDEBAR_W    = 200          # pixels

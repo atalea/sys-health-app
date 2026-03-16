@@ -21,18 +21,8 @@ import datetime
 from pathlib import Path
 from typing import Any
 
-from app_config import THEME, PATHS, CONSTANTS, META, bind_scroll, _POINTER_FILE, _pick_font
+from app_config import THEME, PATHS, CONSTANTS, META, bind_scroll
 from utils import ToggleSwitch
-
-# ─────────────────────────────────────────────
-# Module-level font constants
-# ─────────────────────────────────────────────
-FONT_SECTION   = THEME.FONT_SECTION
-FONT_GROUP     = THEME.FONT_SECTION
-FONT_BODY      = THEME.FONT_BODY
-FONT_DETAIL    = THEME.FONT_DETAIL
-FONT_SMALL     = THEME.FONT_SMALL
-FONT_BTN       = THEME.FONT_BTN
 
 # ─────────────────────────────────────────────
 # Default settings
@@ -128,9 +118,23 @@ class SettingsStore:
         self._data[key] = value
 
     def save(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        with open(self.path, "w") as f:
-            json.dump(self._data, f, indent=2)
+        """
+        Persist settings to disk atomically.
+        Writes to a sibling .tmp file first, then os.replace() swaps it in,
+        so a crash mid-write can never produce a corrupt or zero-byte JSON file.
+        """
+        p   = Path(self.path)
+        tmp = p.with_suffix(".tmp")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            tmp.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+            os.replace(tmp, p)
+        except Exception:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
 
     def reset_to_defaults(self):
         self._data = {}
@@ -168,11 +172,11 @@ class SettingRow(tk.Frame):
         display_label = f"[!]  {label}" if self.key == "target_trash" else label
         tk.Label(text_col, text=display_label,
                  bg=THEME.BG_CARD, fg=fg,
-                 font=FONT_BODY, anchor="w").pack(anchor="w")
+                 font=THEME.FONT_BODY, anchor="w").pack(anchor="w")
         if desc:
             tk.Label(text_col, text=desc,
                      bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                     font=FONT_SMALL, anchor="w",
+                     font=THEME.FONT_SMALL, anchor="w",
                      wraplength=380).pack(anchor="w", pady=(1, 0))
 
         if kind == "bool":
@@ -184,7 +188,7 @@ class SettingRow(tk.Frame):
                 # Add a "(not yet implemented)" note
                 tk.Label(text_col, text="Not yet implemented on this platform",
                          bg=THEME.BG_CARD, fg=THEME.BORDER_CARD,
-                         font=FONT_SMALL, anchor="w").pack(anchor="w", pady=(1, 0))
+                         font=THEME.FONT_SMALL, anchor="w").pack(anchor="w", pady=(1, 0))
             else:
                 ctrl = ToggleSwitch(self, value=bool(value),
                                     on_change=self._on_bool_change, bg=THEME.BG_CARD)
@@ -200,11 +204,11 @@ class SettingRow(tk.Frame):
             opt.config(bg=THEME.BG_CARD, fg=THEME.TEXT_PRIMARY,
                        activebackground=THEME.BORDER, activeforeground=THEME.TEXT_PRIMARY,
                        highlightthickness=0, relief="flat",
-                       font=FONT_DETAIL, width=6)
+                       font=THEME.FONT_DETAIL, width=6)
             opt["menu"].config(bg=THEME.BG_CARD, fg=THEME.TEXT_PRIMARY,
                                activebackground=THEME.ACCENT,
                                activeforeground=THEME.BG_DARK,
-                               font=FONT_DETAIL)
+                               font=THEME.FONT_DETAIL)
             opt.pack()
             self._var.trace_add("write", self._on_int_change)
 
@@ -241,7 +245,7 @@ class SettingsGroup(tk.Frame):
     def _build(self, title, keys, store, on_change):
         tk.Label(self, text=title,
                  bg=THEME.BG_DARK, fg=THEME.TEXT_SECONDARY,
-                 font=FONT_SMALL).pack(anchor="w", pady=(0, 4))
+                 font=THEME.FONT_SMALL).pack(anchor="w", pady=(0, 4))
         border = tk.Frame(self, bg=THEME.BORDER_CARD, padx=1, pady=1)
         border.pack(fill="x")
         card = tk.Frame(border, bg=THEME.BG_CARD)
@@ -272,7 +276,7 @@ class DataFolderCard(tk.Frame):
     def _build(self):
         tk.Label(self, text="DATA FOLDER",
                  bg=THEME.BG_DARK, fg=THEME.TEXT_SECONDARY,
-                 font=FONT_SMALL).pack(anchor="w", pady=(0, 4))
+                 font=THEME.FONT_SMALL).pack(anchor="w", pady=(0, 4))
 
         border = tk.Frame(self, bg=THEME.BORDER_CARD, padx=1, pady=1)
         border.pack(fill="x")
@@ -283,7 +287,7 @@ class DataFolderCard(tk.Frame):
         desc.pack(fill="x", pady=(0, 8))
         tk.Label(desc, text="All settings, history, logs and schedule files are stored here.",
                  bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                 font=FONT_SMALL, anchor="w",
+                 font=THEME.FONT_SMALL, anchor="w",
                  wraplength=480).pack(anchor="w")
 
         row = tk.Frame(card, bg=THEME.BG_CARD)
@@ -293,7 +297,7 @@ class DataFolderCard(tk.Frame):
         self._path_lbl = tk.Label(
             row, text=str(PATHS.APP_DIR),
             bg=THEME.BG_CARD, fg=THEME.TEXT_PRIMARY,
-            font=FONT_DETAIL, anchor="w")
+            font=THEME.FONT_DETAIL, anchor="w")
         self._path_lbl.pack(side="left", fill="x", expand=True)
 
         # Buttons row
@@ -305,7 +309,7 @@ class DataFolderCard(tk.Frame):
         btn_border.pack(side="left")
         btn = tk.Label(btn_border, text="  Change Folder  ",
                        bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                       font=FONT_BTN, cursor="hand2")
+                       font=THEME.FONT_BTN, cursor="hand2")
         btn.pack()
         for w in (btn_border, btn):
             w.bind("<Button-1>", lambda _: self._choose())
@@ -317,7 +321,7 @@ class DataFolderCard(tk.Frame):
         reset_border.pack(side="left", padx=(8, 0))
         reset_btn = tk.Label(reset_border, text="  Reset to Default  ",
                              bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                             font=FONT_BTN, cursor="hand2")
+                             font=THEME.FONT_BTN, cursor="hand2")
         reset_btn.pack()
         for w in (reset_border, reset_btn):
             w.bind("<Button-1>", lambda _: self._reset())
@@ -327,7 +331,7 @@ class DataFolderCard(tk.Frame):
         # Status label
         self._status = tk.Label(card, text="",
                                 bg=THEME.BG_CARD, fg=THEME.ACCENT,
-                                font=FONT_SMALL)
+                                font=THEME.FONT_SMALL)
         self._status.pack(anchor="w", pady=(6, 0))
 
     def _choose(self):
@@ -354,13 +358,11 @@ class DataFolderCard(tk.Frame):
 
     def _reset(self):
         """Reset data folder back to the installation directory."""
-        from pathlib import Path
         default = str(Path(__file__).resolve().parent)
         try:
+            # set_app_dir() persists the new path to the pointer file,
+            # so no manual pointer-file manipulation is needed here.
             PATHS.set_app_dir(default)
-            # Remove pointer file so next launch also uses the default
-            if _POINTER_FILE.exists():
-                _POINTER_FILE.unlink()
             self._path_lbl.config(text=default)
             self._status.config(
                 text="[OK]  Reset to installation folder — restart may be needed",
@@ -403,7 +405,7 @@ class SettingsFrame(tk.Frame):
         header.pack(fill="x", padx=20, pady=(16, 8))
         tk.Label(header, text="Settings",
                  bg=THEME.BG_DARK, fg=THEME.TEXT_PRIMARY,
-                 font=FONT_SECTION).pack(side="left")
+                 font=THEME.FONT_SECTION).pack(side="left")
 
         # ── scrollable canvas ──────────────────
         canvas    = tk.Canvas(self, bg=THEME.BG_DARK, highlightthickness=0)
@@ -488,7 +490,7 @@ class SettingsFrame(tk.Frame):
         group = tk.Frame(parent, bg=THEME.BG_DARK)
         tk.Label(group, text="ABOUT",
                  bg=THEME.BG_DARK, fg=THEME.TEXT_SECONDARY,
-                 font=FONT_SMALL).pack(anchor="w", pady=(0, 4))
+                 font=THEME.FONT_SMALL).pack(anchor="w", pady=(0, 4))
 
         border = tk.Frame(group, bg=THEME.BORDER_CARD, padx=1, pady=1)
         border.pack(fill="x")
@@ -506,11 +508,11 @@ class SettingsFrame(tk.Frame):
             row.pack(fill="x", pady=3)
             tk.Label(row, text=label,
                      bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                     font=FONT_DETAIL, width=16,
+                     font=THEME.FONT_DETAIL, width=16,
                      anchor="w").pack(side="left")
             tk.Label(row, text=value,
                      bg=THEME.BG_CARD, fg=THEME.TEXT_PRIMARY,
-                     font=FONT_SMALL,
+                     font=THEME.FONT_SMALL,
                      anchor="w").pack(side="left")
 
         tk.Frame(card, bg=THEME.BORDER, height=1).pack(fill="x", pady=(10, 8))
@@ -523,7 +525,7 @@ class SettingsFrame(tk.Frame):
         reset_btn = tk.Label(reset_border,
                              text="  <>  Reset to Defaults  ",
                              bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                             font=FONT_BTN, cursor="hand2")
+                             font=THEME.FONT_BTN, cursor="hand2")
         reset_btn.pack()
         for w in (reset_border, reset_btn):
             w.bind("<Button-1>", lambda _: self._confirm_reset())
@@ -534,7 +536,7 @@ class SettingsFrame(tk.Frame):
 
         self._saved_lbl = tk.Label(btn_row, text="",
                                    bg=THEME.BG_CARD, fg=THEME.ACCENT,
-                                   font=FONT_SMALL)
+                                   font=THEME.FONT_SMALL)
         self._saved_lbl.pack(side="right", padx=8)
 
         return group
@@ -564,12 +566,12 @@ class SettingsFrame(tk.Frame):
         tk.Label(confirm,
                  text="Reset all settings to defaults?",
                  bg=THEME.BG_DARK, fg=THEME.TEXT_PRIMARY,
-                 font=FONT_BTN,
+                 font=THEME.FONT_BTN,
                  padx=24, pady=20).pack()
         tk.Label(confirm,
                  text="Your history and log files will not be affected.",
                  bg=THEME.BG_DARK, fg=THEME.TEXT_SECONDARY,
-                 font=FONT_DETAIL).pack(pady=(0, 16))
+                 font=THEME.FONT_DETAIL).pack(pady=(0, 16))
 
         btn_row = tk.Frame(confirm, bg=THEME.BG_DARK, padx=20, pady=12)
         btn_row.pack()
@@ -578,7 +580,7 @@ class SettingsFrame(tk.Frame):
         cb.pack(side="left", padx=(0, 10))
         cl = tk.Label(cb, text="  Cancel  ",
                       bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
-                      font=FONT_BTN, cursor="hand2")
+                      font=THEME.FONT_BTN, cursor="hand2")
         cl.pack()
         for w in (cb, cl):
             w.bind("<Button-1>",
@@ -588,7 +590,7 @@ class SettingsFrame(tk.Frame):
         rb.pack(side="left")
         rl = tk.Label(rb, text="  Reset  ",
                       bg=THEME.WARN, fg=THEME.BG_DARK,
-                      font=FONT_BTN, cursor="hand2")
+                      font=THEME.FONT_BTN, cursor="hand2")
         rl.pack()
         for w in (rb, rl):
             w.bind("<Button-1>",

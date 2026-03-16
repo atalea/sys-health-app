@@ -28,7 +28,8 @@ from typing import Optional, Callable
 # ─────────────────────────────────────────────
 # THEME
 # ─────────────────────────────────────────────
-from app_config import THEME, PATHS, CONSTANTS, _pick_font
+from app_config import THEME, PATHS, CONSTANTS
+from utils import bytes_to_human as _bytes_to_human  # canonical single source
 
 MAX_LOG_LINES = CONSTANTS.MAX_LOG_LINES
 
@@ -71,11 +72,7 @@ class RunSummary:
         return f"{secs}s" if secs < 60 else f"{secs//60}m {secs%60}s"
 
     def freed_str(self) -> str:
-        n = self.freed_bytes
-        if n >= 1024**3: return f"{n/1024**3:.2f} GB"
-        if n >= 1024**2: return f"{n/1024**2:.1f} MB"
-        if n >= 1024:    return f"{n/1024:.0f} KB"
-        return f"{n} B"
+        return _bytes_to_human(self.freed_bytes)
 
 
 # ─────────────────────────────────────────────
@@ -108,7 +105,7 @@ class SummaryCard(tk.Frame):
                  font=THEME.FONT_TITLE).pack(side="left")
         self._status_dot = tk.Label(title_row, text="o",
                                     bg=THEME.BG_CARD, fg=THEME.BORDER,
-                                    font=_pick_font("SF Pro Text", ("Segoe UI", "Helvetica Neue", "Arial"), 10))
+                                    font=THEME.FONT_DETAIL)
         self._status_dot.pack(side="right", padx=(0, 4))
         self._status_lbl = tk.Label(title_row, text="No runs yet",
                                     bg=THEME.BG_CARD, fg=THEME.TEXT_SECONDARY,
@@ -135,7 +132,7 @@ class SummaryCard(tk.Frame):
 
             val_lbl = tk.Label(box, text=default,
                                bg=THEME.BG_DARK, fg=color,
-                               font=_pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 18, "bold"))
+                               font=THEME.FONT_STAT)
             val_lbl.pack()
             tk.Label(box, text=label,
                      bg=THEME.BG_DARK, fg=THEME.TEXT_SECONDARY,

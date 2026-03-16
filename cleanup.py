@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from app_config import PATHS, CONSTANTS, _platform_cache_root, _platform_log_root, _platform_trash, _platform_downloads
+from utils import bytes_to_human as _bytes_to_human  # canonical; avoids renaming every call-site
 
 # ─────────────────────────────────────────────
 # CONSTANTS
@@ -124,14 +125,6 @@ class CleanupResult:
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
-def _bytes_to_human(n: int) -> str:
-    if n >= 1024 ** 3:
-        return f"{n / 1024**3:.2f} GB"
-    if n >= 1024 ** 2:
-        return f"{n / 1024**2:.1f} MB"
-    if n >= 1024:
-        return f"{n / 1024:.0f} KB"
-    return f"{n} B"
 
 
 def _dir_size(path: Path) -> int:

@@ -5,12 +5,18 @@ Module 0: app_config.py
 Responsibility: Single source of truth for theme colours, fonts,
                 file paths, and behavioural constants.
 
-Changes in this version
------------------------
-* PATHS.set_app_dir(new_dir)  - change data folder at runtime, persists to
-  ~/.system_health_monitor_dir so the choice survives restarts
-* bind_scroll(canvas, cmd)    - cross-platform macOS/Linux scroll binding
-  scoped to a canvas widget via Enter/Leave so areas don't bleed into each other
+Public API
+----------
+pick_font(macos_name, fallbacks, size, *style) -> tuple
+    Build a cross-platform Tk font tuple.  Previously named _pick_font
+    (private); the old name is kept as an alias for backward compatibility.
+
+bind_scroll(canvas, cmd)
+    Cross-platform mouse-wheel scroll binding scoped to a canvas widget.
+
+PATHS.set_app_dir(new_dir)
+    Change the data folder at runtime; persists across restarts via
+    ~/.system_health_monitor_dir.
 """
 
 import os
@@ -91,7 +97,7 @@ def bind_scroll(canvas, scroll_cmd):
 
 
 
-def _pick_font(macos_name: str, fallbacks: tuple, size: int, *style) -> tuple:
+def pick_font(macos_name: str, fallbacks: tuple, size: int, *style) -> tuple:
     """
     Return a Tk-compatible font tuple.
     On macOS: prefer the native font (SF Pro / SF Mono).
@@ -100,17 +106,16 @@ def _pick_font(macos_name: str, fallbacks: tuple, size: int, *style) -> tuple:
     so listing the macOS name first on all platforms is safe but means
     macOS users always get the right typeface.
     """
-    # Build ordered preference list: macOS name first, then fallbacks
-    candidates = (macos_name,) + fallbacks
-    # We can only query available fonts once Tk is running; instead we
-    # choose by OS at import time so the tuple is ready before any window
-    # is created.  Tkinter will silently substitute if the name is absent.
     if platform.system() == "Darwin":
         name = macos_name
     else:
         # On Windows/Linux use the first cross-platform fallback
         name = fallbacks[0] if fallbacks else macos_name
     return (name, size) + style
+
+
+# Backward-compatible private alias — existing callers of _pick_font still work.
+_pick_font = pick_font
 
 
 # ─────────────────────────────────────────────
@@ -157,15 +162,22 @@ class _Theme:
 
     # Fonts — cross-platform stacks
     # Display / UI headings
-    FONT_SECTION = _pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 13, "bold")
-    FONT_TITLE   = _pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 12, "bold")
-    FONT_BTN     = _pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 11, "bold")
+    FONT_SECTION    = pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 13, "bold")
+    FONT_TITLE      = pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 12, "bold")
+    FONT_BTN        = pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 11, "bold")
     # Body / detail text
-    FONT_BODY    = _pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"), 11)
-    FONT_DETAIL  = _pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"), 10)
-    FONT_SMALL   = _pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"),  9)
+    FONT_BODY       = pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"), 11)
+    FONT_BODY_BOLD  = pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"), 11, "bold")
+    FONT_DETAIL     = pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"), 10)
+    FONT_DETAIL_BOLD= pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 10, "bold")
+    FONT_SMALL      = pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"),  9)
+    FONT_ICON       = pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"), 15)
+    FONT_LABEL      = pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"), 12)
+    FONT_STAT       = pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 18, "bold")
+    FONT_DISPLAY    = pick_font("SF Pro Text",    ("Segoe UI", "Helvetica Neue", "Arial"), 36)
+    FONT_PERCENT    = pick_font("SF Pro Display", ("Segoe UI", "Helvetica Neue", "Arial"), 32, "bold")
     # Monospace
-    FONT_MONO    = _pick_font("SF Mono",        ("Consolas", "Menlo", "Courier New"),     9)
+    FONT_MONO       = pick_font("SF Mono",        ("Consolas", "Menlo", "Courier New"),     9)
 
 THEME = _Theme()
 
@@ -333,7 +345,6 @@ class _Constants:
     # Platform-aware cache sub-paths
     # On macOS these are bundle-ID subdirs under ~/Library/Caches.
     # On Windows/Linux they are subdirs under the platform cache root.
-    # Keys are human-readable labels; values are the subdir names.
     @staticmethod
     def cache_subdirs() -> list:
         """Return cache subdirectory names for the current platform."""
@@ -361,10 +372,14 @@ class _Constants:
             "spotify",
         ]
 
-    # Keep a static attribute for backward-compat so existing code that
-    # reads CONSTANTS.CACHE_SUBDIRS still works (returns macOS list on
-    # macOS, cross-platform list elsewhere).
-    CACHE_SUBDIRS = cache_subdirs.__func__()  # evaluated at import time
+    @property
+    def CACHE_SUBDIRS(self) -> list:  # type: ignore[override]
+        """
+        Property so CONSTANTS.CACHE_SUBDIRS always reflects the live platform.
+        Replaces the old class-attribute approach (which used a fragile
+        __func__() call evaluated once at import time).
+        """
+        return self.cache_subdirs()
 
 
 CONSTANTS = _Constants()
